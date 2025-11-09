@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Publications — Combined (OpenAlex)</title>
+<style>
+  :root{
+    --navy:#1b2656; --gold:#d99f53; --bg:#f4f4f4; --ink:#1b2656;
+    --muted:#565b6c; --card:#ffffff; --line:#e6e6e6;
+  }
+  html,body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif}
+  header{background:var(--navy);color:#fff;padding:18px}
+  header h1{margin:0;font-size:20px}
+  header .sub{opacity:.9;font-size:13px;margin-top:4px}
+  main{max-width:1100px;margin:20px auto 60px;padding:0 16px}
+  .panel{background:var(--card);border:1px solid var(--line);border-left:6px solid var(--gold);
+         border-radius:10px;padding:14px 16px;box-shadow:0 2px 6px rgba(0,0,0,.05)}
+  .flex{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .pill{display:inline-block;border:1px solid var(--navy);color:var(--navy);background:#fff;
+        border-radius:999px;padding:2px 8px;font-size:12px}
+  .stat{font-size:13px;color:var(--muted)}
+  .year{margin-top:22px;border-top:2px solid var(--line);padding-top:12px}
+  .work{padding:12px 0;border-bottom:1px dashed var(--line)}
+  .title{font-weight:700}
+  .title a{color:var(--navy);text-decoration:none}
+  .title a:hover{text-decoration:underline}
+  .by{color:var(--muted);font-size:13px;margin-top:2px}
+  .src{font-size:13px;margin-top:3px}
+  .tag{border:1px solid var(--gold);background:rgba(217,159,83,.12);color:var(--navy);
+       border-radius:999px;padding:2px 6px;font-size:11px}
+  .yearhead{display:flex;align-items:baseline;gap:10px}
+  .countpill{background:rgba(27,38,86,.06);border:1px solid var(--line);border-radius:999px;padding:2px 8px;font-size:12px;color:var(--navy)}
+  .notice{color:var(--muted);font-size:12px;margin-top:6px}
+  .loading{
+    display:inline-block; width:1.1em; height:1.1em; border:2px solid #fff; border-right-color:transparent;
+    border-radius:50%; vertical-align:-2px; animation:spin 0.8s linear infinite; margin-right:8px;
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+  <header>
+    <h1>Combined Publications</h1>
+    <div class="sub">Fetched live from OpenAlex • grouped by publication year (new → old)</div>
+  </header>
+
+  <main>
+    <section id="about" class="panel">
+      <div id="authors" class="flex"></div>
+      <div id="stats" class="stat" style="margin-top:8px;"></div>
+      <div class="notice">Source: <a href="https://openalex.org" target="_blank" rel="noopener" style="color:#ffd9a3">OpenAlex</a></div>
+    </section>
+
+    <section id="results" style="margin-top:18px"></section>
+  </main>
+
+<script>
+(async () => {
+  /*** SETTINGS — EDIT THESE ***/
+  const ORCIDS = [
+    // Put ORCID iDs here (strings). Examples:
+  "0000-0001-9869-0270", "0000-0001-5104-1062", "0000-0001-5443-9711", "0000-0001-5320-4830", "0000-0002-5834-4872"
+  ];
+  const MAILTO = "you@example.com";   // Optional but recommended by OpenAlex
+  // const MAX_PAGES_PER_AUTHOR = 5;     // Raise if authors have many works
+  const PER_PAGE = 200;               // OpenAlex max per page
+
+  /*** IMPLEMENTATION ***/
+  const api = "https://api.openalex.org";
+  const qsMail = MAILTO ? `&mailto=${encodeURIComponent(MAILTO)}` : "";
+
+  const $ = sel => document.querySelector(sel);
+  const out = $("#results");
+  const authorsBox = $("#authors");
+  const statsBox = $("#stats");
+
+  function status(text){ statsBox.textContent = text; }
+
+  async function resolveAuthor(orcid){
+    const url = `${api}/authors/orcid:${encodeURIComponent(orcid)}${qsMail.replace('&','?')}`;
+    const r = await fetch(url);
+    if (r.status === 404) return null;
+    if (!r.ok) throw new Error(`Author lookup failed (${orcid}): ${r.status}`);
+    return r.json();
+  }
+
+  async function fetchWorks(authorOpenAlexId){
+    const works = [];
+    for (let p=1; p<=MAX_PAGES_PER_AUTHOR; p++){
+      const url = `${api}/works?filter=authorships.author.id:${authorOpenAlexId}&sort=publication_year:desc&per-page=${PER_PAGE}&page=${p}${qsMail}`;
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`Works fetch failed (AID ${authorOpenAlexId}): ${r.status}`);
+      const j = await r.json();
+      if (!j.results?.length) break;
+      works.push(...j.results);
+      if (j.meta?.count && p*PER_PAGE >= j.meta.count) break;
+      await new Promise(res=>setTimeout(res,120)); // be polite (~10 req/s)
+    }
+    return works;
+  }
+
+  function renderAuthorsChips(authors){
+    authorsBox.innerHTML = "";
+    authors.forEach(a=>{
+      const chip = document.createElement('span');
+      chip.className = "pill";
+      chip.textContent = a?.display_name || a?.orcid || "Unknown";
+      authorsBox.appendChild(chip);
+    });
+  }
+
+  function linkForWork(w){
+    return w.primary_location?.landing_page_url
+        || w.openalex
+        || (w.doi ? `https://doi.org/${w.doi}` : "");
+  }
+
+  function render(worksByYear, authorsResolved){
+    renderAuthorsChips(authorsResolved);
+    out.innerHTML = "";
+
+    const years = Object.keys(worksByYear)
+      .sort((a,b)=> (b === "unknown") - (a === "unknown") || (+b||0) - (+a||0)); // numeric desc, "unknown" last
+
+    years.forEach(y=>{
+      const group = worksByYear[y];
+      const sec = document.createElement('div'); sec.className = "year";
+      const head = document.createElement('div'); head.className = "yearhead";
+      const h = document.createElement('h2'); h.style.margin="0"; h.textContent = (y==="unknown" ? "No year" : y);
+      const count = document.createElement('span'); count.className="countpill"; count.textContent = `${group.length} item${group.length>1?"s":""}`;
+      head.appendChild(h); head.appendChild(count);
+      sec.appendChild(head);
+
+      group.forEach(w=>{
+        const item = document.createElement('div'); item.className="work";
+        const url = linkForWork(w);
+        const title = w.title || "(no title)";
+        const authors = (w.authorships||[]).map(a=>a.author?.display_name).filter(Boolean).join(', ');
+        const src = w.primary_location?.source?.display_name || w.host_venue?.display_name || "";
+        const type = w.type || "work";
+        const pages =
+          (w.biblio?.first_page || w.biblio?.last_page)
+          ? `pp ${w.biblio?.first_page || "?"}${w.biblio?.last_page?'-'+w.biblio.last_page:''}` : "";
+        const vol = w.biblio?.volume ? `vol ${w.biblio.volume}` : "";
+
+        item.innerHTML = `
+          <div class="title">${url ? `<a href="${url}" target="_blank" rel="noopener">${title}</a>` : title}</div>
+          ${authors ? `<div class="by">${authors}</div>` : ""}
+          <div class="src"><span class="tag">${type}</span>${src?` · ${src}`:""}${vol?` · ${vol}`:""}${pages?` · ${pages}`:""}</div>
+        `;
+        sec.appendChild(item);
+      });
+
+      out.appendChild(sec);
+    });
+  }
+
+  // ——— RUN ———
+  if (!ORCIDS.length){
+    $("#about").insertAdjacentHTML("beforeend",
+      `<div class="notice" style="margin-top:8px;color:#b00020">No ORCID list configured. Edit the file and add ORCIDs to the <code>ORCIDS</code> array.</div>`);
+    return;
+  }
+
+  statsBox.innerHTML = `<span class="loading"></span>Resolving authors…`;
+
+  try{
+    // 1) Resolve authors
+    const authorsResolved = [];
+    for (const orcid of ORCIDS){
+      const a = await resolveAuthor(orcid);
+      authorsResolved.push({
+        orcid,
+        display_name: a?.display_name || orcid,
+        id: a?.id ? a.id.split('/').pop() : null
+      });
+    }
+    const authorIds = authorsResolved.filter(x=>x.id).map(x=>x.id);
+    if (!authorIds.length){
+      status("No authors found for the provided ORCIDs.");
+      renderAuthorsChips(authorsResolved);
+      return;
+    }
+
+    // 2) Fetch works per author and merge/unique by work id
+    status(`Fetching works for ${authorIds.length} author(s)…`);
+    const all = [];
+    for (const aid of authorIds){
+      const ws = await fetchWorks(aid);
+      all.push(...ws);
+    }
+    const unique = new Map();
+    all.forEach(w=>{ if (w.id) unique.set(w.id, w); });
+
+    // 3) Group by year and sort within each year
+    const worksByYear = {};
+    unique.forEach(w=>{
+      const y = w.publication_year || "unknown";
+      (worksByYear[y] ||= []).push(w);
+    });
+    Object.values(worksByYear).forEach(list=>{
+      list.sort((a,b)=>{
+        const ya = a.publication_year||0, yb = b.publication_year||0;
+        if (yb-ya) return yb-ya;
+        return (b.cited_by_count||0) - (a.cited_by_count||0); // tie-break by citations
+      });
+    });
+
+    status(`Showing ${unique.size} unique works across ${authorIds.length} author(s).`);
+    render(worksByYear, authorsResolved);
+  } catch(e){
+    console.error(e);
+    status("Error: " + e.message);
+  }
+})();
+</script>
+</body>
+</html>
